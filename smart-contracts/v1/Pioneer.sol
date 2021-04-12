@@ -420,7 +420,8 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     uint8 private _decimals;
     string private _symbol;
     string private _name;
-    
+    address[] private holders;
+    uint private holdersCount;
     
     // Token listing
     uint public listingFees = 100;
@@ -438,6 +439,7 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     uint public tax_lottery_sell        = 10;   // % of each sell transaction that is added to the lottery pool
     uint public burnt_total             = 0;    // Total burnt
     // Lottery
+    bytes32 private lottery_password    = keccak256(abi.encodePacked(blackhole)); // Keccak password to verify the authenticity of the random number provided when a token gets listed.
     uint public lottery_pool_size       = 10;   // When the lottery pool reach this amount (or more) & a new token gets listed (to provide gas fees), a winner is randomly selected to receive the pool
     uint public lottery_pool_balance    = 0;    // Current lottery pool balance
     uint public lottery_paid            = 0;    // Total paid out
@@ -472,8 +474,14 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     function record(address token_address) external hasEnoughTokens returns (uint) {
         _transfer(msg.sender, blackhole, listingFees);
         // Should we trigger the lottery?
+        return recordNewToken(token_address);
+    }
+    
+    function recordWithLottery(address token_address, uint random_number, bytes32 signature) external hasEnoughTokens returns (uint) {
+        _transfer(msg.sender, blackhole, listingFees);
+        // Should we trigger the lottery?
         if (lottery_pool_balance>=lottery_pool_size) {
-            triggerLottery();
+            triggerLottery(random_number, signature);
         }
         return recordNewToken(token_address);
     }
@@ -506,8 +514,25 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     
     // LOTTERY
     // -------
-    function triggerLottery() internal returns (bool) {
-        
+    function triggerLottery(uint random_number, bytes32 signature) internal returns (bool) {
+        require(keccak256(abi.encodePacked(lottery_password, random_number))==signature, "Fraudulent signature");
+        uint index = holdersCount*(random_number/10000);
+        address winner = holders[index];
+        if (_balances[winner]<=0) {
+            // We have a winner! We pay them the lottery pool
+            _balances[winner] = _balances[winner].add(lottery_pool_balance);
+            // Add to the amount paid to the winners
+            lottery_paid = lottery_paid.add(lottery_pool_balance);
+            // Reset the pool
+            lottery_pool_balance = 0;
+        } else {
+            return false;
+        }
+    }
+    
+    function changeLotteryPassword(address new_password) external onlyOwner returns (bytes32) {
+        lottery_password = keccak256(abi.encodePacked(new_password));
+        return lottery_password;
     }
     
 
