@@ -425,6 +425,24 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     // Token listing
     uint public listingFees = 100;
     
+    
+    // TOKENOMICS
+    // ----------
+    // Prevent whale-dump
+    uint public whale_threshold         = 1000; // If a user has that many tokens or more...
+    uint public whale_withdraw_limit    = 100;  // They can't withdraw more than this much...
+    uint public whale_withdraw_timeout  = 60;   // And they need to wait that long before they can withdraw again (in sec).
+    // Taxes
+    uint public tax_burn                = 2;    // % of each transaction that is burnt
+    uint public tax_lottery_buy         = 2;    // % of each buy transaction that is added to the lottery pool
+    uint public tax_lottery_sell        = 10;   // % of each sell transaction that is added to the lottery pool
+    uint public burnt_total             = 0;    // Total burnt
+    // Lottery
+    uint public lottery_pool_size       = 10;   // When the lottery pool reach this amount (or more) & a new token gets listed (to provide gas fees), a winner is randomly selected to receive the pool
+    uint public lottery_pool_balance    = 0;    // Current lottery pool balance
+    uint public lottery_paid            = 0;    // Total paid out
+    
+    
     constructor() public {
         _name = "Pioneer1";
         _symbol = "PIONEER1";
@@ -453,9 +471,44 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
     
     function record(address token_address) external hasEnoughTokens returns (uint) {
         _transfer(msg.sender, blackhole, listingFees);
+        // Should we trigger the lottery?
+        if (lottery_pool_balance>=lottery_pool_size) {
+            triggerLottery();
+        }
         return recordNewToken(token_address);
     }
     
+    
+    // TOKENOMICS
+    // ----------
+    // Calculate the burn & lottery taxes
+    function getTxAmounts(uint amount, bool isBuy) internal view returns (uint, uint, uint) {
+        if (isBuy==true) {
+            // Buy
+            uint burnt = amount * tax_burn / 100;
+            require(burnt < amount, "Overflow");
+            uint lottery_tax = amount * tax_lottery_buy / 100;
+            require(lottery_tax < amount, "Overflow");
+            uint remaining = amount - burnt - lottery_tax;
+            require(remaining > 0, "Underflow");
+            return (burnt, lottery_tax, remaining);
+        } else {
+            // Sell
+            uint burnt = amount * tax_burn / 100;
+            require(burnt < amount, "Overflow");
+            uint lottery_tax = amount * tax_lottery_sell / 100;
+            require(lottery_tax < amount, "Overflow");
+            uint remaining = amount - burnt - lottery_tax;
+            require(remaining > 0, "Underflow");
+            return (burnt, lottery_tax, remaining);
+        }
+    }
+    
+    // LOTTERY
+    // -------
+    function triggerLottery() internal returns (bool) {
+        
+    }
     
 
     /**
@@ -509,7 +562,29 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
      * - the caller must have a balance of at least `amount`.
      */
     function transfer(address recipient, uint256 amount) external returns (bool) {
-        _transfer(_msgSender(), recipient, amount);
+        if (_msgSender()==owner()) {
+            // Buy
+            (uint burnt, uint lottery_tax, uint remaining) = getTxAmounts(amount, true);
+            // Transfer the coins to the recipient
+            _transfer(_msgSender(), recipient, remaining);
+            // Burn tax
+            _transfer(_msgSender(), blackhole, burnt);
+            burnt_total = burnt_total.add(burnt);
+            // Lottery tax
+            _transferToLotteryPool(_msgSender(), lottery_tax);
+            burnt_total = burnt_total.add(burnt);
+        } else {
+            // Sell
+            (uint burnt, uint lottery_tax, uint remaining) = getTxAmounts(amount, false);
+            // Transfer the coins to the recipient
+            _transfer(_msgSender(), recipient, remaining);
+            // Burn tax
+            _transfer(_msgSender(), blackhole, burnt);
+            // Lottery tax
+            _transferToLotteryPool(_msgSender(), lottery_tax);
+            burnt_total = burnt_total.add(burnt);
+        }
+        
         return true;
     }
 
@@ -620,6 +695,14 @@ contract BEP20Token is Context, IBEP20, Ownable, TokenRecords {
         _balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
         _balances[recipient] = _balances[recipient].add(amount);
         emit Transfer(sender, recipient, amount);
+    }
+    // Transfer to Lottery pool
+    function _transferToLotteryPool(address sender, uint256 amount) internal returns (uint) {
+        require(sender != address(0), "BEP20: transfer from the zero address");
+
+        _balances[sender] = _balances[sender].sub(amount, "BEP20: transfer amount exceeds balance");
+        lottery_pool_balance = lottery_pool_balance.add(amount);
+        return lottery_pool_balance;
     }
 
     /** @dev Creates `amount` tokens and assigns them to `account`, increasing
